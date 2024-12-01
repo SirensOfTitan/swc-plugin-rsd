@@ -1,0 +1,7 @@
+{
+  "name": "swc-plugin-rsd",
+  "main": "swc_plugin_rsd.wasm",
+  "scripts": {
+    "build": "cargo build --release -p swc_plugin_rsd --target wasm32-wasip1 && cp ./target/wasm32-wasip1/release/swc_plugin_rsd.wasm ./"
+  }
+}
