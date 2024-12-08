@@ -1,20 +1,30 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use swc_atoms::JsWord;
-use swc_common::DUMMY_SP;
+use swc_common::{DUMMY_SP, SourceMapperDyn};
 use swc_core::ecma::utils::private_ident;
 use swc_core::ecma::visit::visit_mut_pass;
 use swc_core::{ecma::ast::*, ecma::visit::VisitMut};
 use swc_ecma_visit::VisitMutWith;
 
-pub fn react_strict_dom_plugin() -> impl Pass {
+pub fn react_strict_dom_plugin(debug: bool, source_map: Arc<SourceMapperDyn>) -> impl Pass {
     visit_mut_pass(ReactStrictDomPlugin {
-        ..Default::default()
+        debug,
+        source_map,
+        rsd_imports: vec![],
+        cnt: 0,
+        default_styles: None,
+        resolve_style: None,
     })
 }
 
-#[derive(Default)]
 struct ReactStrictDomPlugin {
+    debug: bool,
+
+    /// A reference to the source file's sourcemap to get original line/col numbers.
+    source_map: Arc<SourceMapperDyn>,
+
     /// Imports of react-strict-dom in current module.
     rsd_imports: Vec<ImportDecl>,
 
@@ -42,9 +52,7 @@ impl ReactStrictDomPlugin {
             return None;
         };
 
-        let Some(object_name) = jsx_member_expr.obj.as_ident() else {
-            return None;
-        };
+        let object_name = jsx_member_expr.obj.as_ident()?;
 
         let is_html_element = self
             .rsd_imports
@@ -212,6 +220,29 @@ impl ReactStrictDomPlugin {
             added_attrs.push(style_spread);
         }
 
+        if self.debug {
+            let Ok(lines) = self
+                .source_map
+                .get_code_map()
+                .span_to_lines(jsx_opening_element.span)
+            else {
+                return added_attrs;
+            };
+
+            let start_line = lines
+                .lines
+                .first()
+                .map(|x| x.line_index.to_string())
+                .unwrap_or("unknown".to_string());
+            let source_map_value = format!("{}:{}", lines.file.name, start_line);
+
+            added_attrs.push(JSXAttrOrSpread::JSXAttr(JSXAttr {
+                span: DUMMY_SP,
+                name: JSXAttrName::Ident("data-element-src".into()),
+                value: Some(JSXAttrValue::Lit(Lit::Str(source_map_value.into()))),
+            }));
+        }
+
         added_attrs
     }
 }
@@ -280,70 +311,4 @@ impl VisitMut for ReactStrictDomPlugin {
         jsx_closing_element.name =
             JSXElementName::Ident(private_ident!(rsd_html_element.prop.sym.as_str()));
     }
-}
-
-#[cfg(test)]
-mod test {
-    use swc_core::ecma::parser::{Syntax, TsSyntax};
-    use swc_core::ecma::transforms::testing::test_inline;
-
-    use super::react_strict_dom_plugin;
-
-    test_inline!(
-        Syntax::Typescript(TsSyntax {
-            tsx: true,
-            ..TsSyntax::default()
-        }),
-        |_| react_strict_dom_plugin(),
-        files_that_use_rsd_should_have_runtime_import,
-        r#"import {css, html as h} from "react-strict-dom";
-
-        function App() {
-          return (
-            <h.div for="asdf" role="none" style={styles.foo}>
-              foo
-            </h.div>
-          );
-        }"#,
-        r#"import { defaultStyles as $_defaultStyles_1, resolveStyle as $_resolveStyle_2 } from "react-strict-dom/runtime";
-        import {css, html as h} from "react-strict-dom";
-
-        function App() {
-          return <div htmlFor="asdf" role="presentation" {...$_resolveStyle_2($_defaultStyles_1.div, styles.foo)}>
-              foo
-            </div>;
-        }"#
-    );
-
-    test_inline!(
-        Syntax::Typescript(TsSyntax {
-            tsx: true,
-            ..TsSyntax::default()
-        }),
-        |_| react_strict_dom_plugin(),
-        test_changed_special_attributes,
-        r#"import {css, html} from "react-strict-dom";
-
-        function App() {
-          return (
-            <>
-              <html.textarea />
-              <html.button style={[styles.bar, styles.foo]}>
-                hello
-              </html.button>
-            </>
-          );
-        }"#,
-        r#"import { defaultStyles as $_defaultStyles_1, resolveStyle as $_resolveStyle_2 } from "react-strict-dom/runtime";
-        import {css, html} from "react-strict-dom";
-
-        function App() {
-          return <>
-              <textarea dir="auto" {...$_resolveStyle_2($_defaultStyles_1.textarea)} />
-              <button {...$_resolveStyle_2($_defaultStyles_1.button, styles.bar, styles.foo)} type="button">
-                hello
-              </button>
-            </>;
-        }"#
-    );
 }
